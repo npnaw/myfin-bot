@@ -77,13 +77,59 @@ async function processTransaction(msg, chatId, text, env) {
 
 async function handleCommand(text, chatId, env) {
   const cmd = text.split(" ")[0].toLowerCase();
-  let query = "";
   
-  if (cmd === "/day") query = "date(transaction_date) = date('now', '+7 hours')";
-  else if (cmd === "/week") query = "strftime('%W', transaction_date) = strftime('%W', 'now', '+7 hours')";
-  else if (cmd === "/month") query = "strftime('%Y-%m', transaction_date) = strftime('%Y-%m', 'now', '+7 hours')";
-  else if (cmd === "/year") query = "strftime('%Y', transaction_date) = strftime('%Y', 'now', '+7 hours')";
-  else if (cmd === "/dashboard") {
+  if (cmd === "/balance") {
+    const balanceRes = await env.DB.prepare(`
+      SELECT SUM(CASE WHEN type = 'income' THEN amount ELSE -amount END) as balance 
+      FROM transactions WHERE chat_id = ?
+    `).bind(chatId).first();
+    
+    await tgAPI('sendMessage', env.TG_TOKEN, { 
+      chat_id: chatId, 
+      text: `Số dư hiện tại: ${formatVND(balanceRes.balance || 0)}` 
+    });
+    return;
+  }
+
+  let query = "";
+  let dateLabel = "";
+
+  const now = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
+  const dd = String(now.getUTCDate()).padStart(2, '0');
+  const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const yyyy = now.getUTCFullYear();
+
+  if (cmd === "/day") {
+    query = "date(transaction_date) = date('now', '+7 hours')";
+    dateLabel = `${dd}/${mm}/${yyyy}`;
+  } else if (cmd === "/week") {
+    query = "strftime('%W', transaction_date) = strftime('%W', 'now', '+7 hours')";
+    
+    const dayOfWeek = now.getUTCDay();
+    const diffToMonday = now.getUTCDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+    
+    const startOfWeek = new Date(now.getTime());
+    startOfWeek.setUTCDate(diffToMonday);
+    
+    const endOfWeek = new Date(startOfWeek.getTime());
+    endOfWeek.setUTCDate(startOfWeek.getUTCDate() + 6);
+
+    const sDD = String(startOfWeek.getUTCDate()).padStart(2, '0');
+    const sMM = String(startOfWeek.getUTCMonth() + 1).padStart(2, '0');
+    const sYYYY = startOfWeek.getUTCFullYear();
+
+    const eDD = String(endOfWeek.getUTCDate()).padStart(2, '0');
+    const eMM = String(endOfWeek.getUTCMonth() + 1).padStart(2, '0');
+    const eYYYY = endOfWeek.getUTCFullYear();
+
+    dateLabel = `${sDD}-${sMM}-${sYYYY} -> ${eDD}-${eMM}-${eYYYY}`;
+  } else if (cmd === "/month") {
+    query = "strftime('%Y-%m', transaction_date) = strftime('%Y-%m', 'now', '+7 hours')";
+    dateLabel = `${mm}/${yyyy}`;
+  } else if (cmd === "/year") {
+    query = "strftime('%Y', transaction_date) = strftime('%Y', 'now', '+7 hours')";
+    dateLabel = `${yyyy}`;
+  } else if (cmd === "/dashboard") {
     await sendDashboardHome(chatId, env);
     return;
   } else return;
@@ -95,7 +141,7 @@ async function handleCommand(text, chatId, env) {
 
   await tgAPI('sendMessage', env.TG_TOKEN, { 
     chat_id: chatId, 
-    text: `Total spent (${cmd}): ${formatVND(res.total || 0)}` 
+    text: `Total spent (${dateLabel}): ${formatVND(res.total || 0)}` 
   });
 }
 
@@ -108,24 +154,128 @@ async function handleCallback(cb, env) {
     await sendDashboardHome(chatId, env, msgId);
   } else if (data.startsWith("view_year_")) {
     const year = data.split("_")[2];
-    const kb = {
-      inline_keyboard: [
-        [{text: "01", callback_data: `view_month_${year}_01`}, {text: "02", callback_data: `view_month_${year}_02`}, {text: "03", callback_data: `view_month_${year}_03`}],
-        [{text: "04", callback_data: `view_month_${year}_04`}, {text: "05", callback_data: `view_month_${year}_05`}, {text: "06", callback_data: `view_month_${year}_06`}],
-        [{text: "07", callback_data: `view_month_${year}_07`}, {text: "08", callback_data: `view_month_${year}_08`}, {text: "09", callback_data: `view_month_${year}_09`}],
-        [{text: "10", callback_data: `view_month_${year}_10`}, {text: "11", callback_data: `view_month_${year}_11`}, {text: "12", callback_data: `view_month_${year}_12`}],
-        [{text: `📊 Total ${year}`, callback_data: `total_year_${year}`}],
-        [{text: "⬅️ Back", callback_data: "view_home"}]
-      ]
-    };
-    await tgAPI('editMessageText', env.TG_TOKEN, { chat_id: chatId, message_id: msgId, text: `${year} Dashboard:`, reply_markup: JSON.stringify(kb) });
+    
+    const { results } = await env.DB.prepare(`
+      SELECT DISTINCT strftime('%m', transaction_date) as month 
+      FROM transactions 
+      WHERE chat_id = ? AND strftime('%Y', transaction_date) = ?
+      ORDER BY month ASC
+    `).bind(chatId, year).all();
+
+    const keyboard = [];
+    let currentRow = [];
+
+    results.forEach((row, index) => {
+      currentRow.push({ text: row.month, callback_data: `view_month_${year}_${row.month}` });
+      if (currentRow.length === 3 || index === results.length - 1) {
+        keyboard.push(currentRow);
+        currentRow = [];
+      }
+    });
+
+    keyboard.push([{text: `📊 Total ${year}`, callback_data: `total_year_${year}`}]);
+    keyboard.push([{text: "⬅️ Back", callback_data: "view_home"}]);
+
+    const text = results.length > 0 ? `Năm ${year}:` : `Chưa có giao dịch nào trong năm ${year}.`;
+
+    await tgAPI('editMessageText', env.TG_TOKEN, { 
+      chat_id: chatId, 
+      message_id: msgId, 
+      text: text, 
+      reply_markup: JSON.stringify({ inline_keyboard: keyboard }) 
+    });
+  } else if (data.startsWith("view_month_")) {
+    const parts = data.split("_");
+    const year = parts[2];
+    const month = parts[3];
+    
+    const { results } = await env.DB.prepare(`
+      SELECT DISTINCT strftime('%d', transaction_date) as day 
+      FROM transactions 
+      WHERE chat_id = ? AND strftime('%Y-%m', transaction_date) = ?
+      ORDER BY day ASC
+    `).bind(chatId, `${year}-${month}`).all();
+
+    const keyboard = [];
+    let currentRow = [];
+
+    results.forEach((row, index) => {
+      currentRow.push({ text: row.day, callback_data: `view_day_${year}_${month}_${row.day}` });
+      if (currentRow.length === 4 || index === results.length - 1) {
+        keyboard.push(currentRow);
+        currentRow = [];
+      }
+    });
+
+    keyboard.push([{text: `📊 Total ${month}/${year}`, callback_data: `total_month_${year}_${month}`}]);
+    keyboard.push([{text: "⬅️ Back", callback_data: `view_year_${year}`}]);
+
+    const text = results.length > 0 ? `Tháng ${month}/${year}:` : `Không có giao dịch.`;
+
+    await tgAPI('editMessageText', env.TG_TOKEN, { 
+      chat_id: chatId, 
+      message_id: msgId, 
+      text: text, 
+      reply_markup: JSON.stringify({ inline_keyboard: keyboard }) 
+    });
+  } else if (data.startsWith("view_day_")) {
+    const parts = data.split("_");
+    const year = parts[2];
+    const month = parts[3];
+    const day = parts[4];
+    
+    const res = await env.DB.prepare(`
+      SELECT SUM(amount) as t 
+      FROM transactions 
+      WHERE chat_id = ? AND type = 'expense' AND date(transaction_date) = ?
+    `).bind(chatId, `${year}-${month}-${day}`).first();
+
+    await tgAPI('answerCallbackQuery', env.TG_TOKEN, { 
+      callback_query_id: cb.id, 
+      text: `Đã chi ngày ${day}/${month}/${year}: ${formatVND(res.t || 0)}`, 
+      show_alert: true 
+    });
+  } else if (data.startsWith("total_month_")) {
+    const parts = data.split("_");
+    const year = parts[2];
+    const month = parts[3];
+    
+    const res = await env.DB.prepare(`
+      SELECT SUM(amount) as t 
+      FROM transactions 
+      WHERE chat_id = ? AND type = 'expense' AND strftime('%Y-%m', transaction_date) = ?
+    `).bind(chatId, `${year}-${month}`).first();
+    
+    await tgAPI('answerCallbackQuery', env.TG_TOKEN, { 
+      callback_query_id: cb.id, 
+      text: `Tổng tháng ${month}/${year}: ${formatVND(res.t || 0)}`, 
+      show_alert: true 
+    });
   } else if (data.startsWith("total_year_")) {
     const year = data.split("_")[2];
-    const res = await env.DB.prepare(`SELECT SUM(amount) as t FROM transactions WHERE chat_id = ? AND type = 'expense' AND strftime('%Y', transaction_date) = ?`).bind(chatId, year).first();
-    await tgAPI('answerCallbackQuery', env.TG_TOKEN, { callback_query_id: cb.id, text: `Spent in ${year}: ${formatVND(res.t || 0)}`, show_alert: true });
+    const res = await env.DB.prepare(`
+      SELECT SUM(amount) as t 
+      FROM transactions 
+      WHERE chat_id = ? AND type = 'expense' AND strftime('%Y', transaction_date) = ?
+    `).bind(chatId, year).first();
+    
+    await tgAPI('answerCallbackQuery', env.TG_TOKEN, { 
+      callback_query_id: cb.id, 
+      text: `Tổng năm ${year}: ${formatVND(res.t || 0)}`, 
+      show_alert: true 
+    });
   } else if (data === "total_all") {
-    const res = await env.DB.prepare(`SELECT SUM(amount) as t FROM transactions WHERE chat_id = ? AND type = 'expense'`).bind(chatId).first();
-    await tgAPI('answerCallbackQuery', env.TG_TOKEN, { callback_query_id: cb.id, text: `All-Time Spent: ${formatVND(res.t || 0)}`, show_alert: true });
+    const res = await env.DB.prepare(`
+      SELECT SUM(amount) as t 
+      FROM transactions 
+      WHERE chat_id = ? AND type = 'expense'
+    `).bind(chatId).first();
+    
+    await tgAPI('answerCallbackQuery', env.TG_TOKEN, { 
+      callback_query_id: cb.id, 
+      text: `Tổng tất cả: ${formatVND(res.t || 0)}`, 
+      show_alert: true 
+    });
   }
 }
 
