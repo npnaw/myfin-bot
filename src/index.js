@@ -301,12 +301,12 @@ async function sendDashboardHome(chatId, env, msgId = null) {
 }
 
 async function extractDataLLM(text, imageUrl, env) {
-  const prompt = `Extract transaction data into strict JSON: {"amount": integer, "type": "income" or "expense", "category": "string"}. 
-  CRITICAL RULES: 
-  - Convert shorthand to full integers: "50k" = 50000, "1tr" or "1m" = 1000000. 
+  const prompt = `Extract transaction data into strict JSON: {"amount": integer, "type": "income" or "expense", "category": "string"}.
+  CRITICAL RULES:
+  - Default "type" to "expense" for EVERYTHING. Use "income" ONLY if the text explicitly contains a "+" prefix.
+  - Convert shorthand to full integers: "50k" = 50000, "1tr" or "1m" = 1000000.
   - Remove all dots/commas from the final amount number.
-  - Use '+' prefix in text for "income". 
-  - Fallback category "misc" for image upload with no caption/text only`;
+  - Fallback category is "misc" for image uploads with no caption/text.`;
   
   const contents = [{ parts: [{ text: prompt }] }];
   
