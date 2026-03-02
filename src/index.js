@@ -1,3 +1,7 @@
+const formatVND = (amount) => {
+  return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount);
+};
+
 export default {
   async fetch(request, env) {
     if (request.method !== "POST") return new Response("OK", { status: 200 });
@@ -66,7 +70,7 @@ async function processTransaction(msg, chatId, text, env) {
 
   const balance = balanceRes.balance || 0;
   const actionText = data.type === 'income' ? 'Đã nhận' : 'Đã chi';
-  const responseText = `${actionText} ${data.amount} cho ${data.category}\nCòn lại ${balance}`;
+  const responseText = `${actionText} ${formatVND(data.amount)} cho ${data.category}\nCòn lại ${formatVND(balance)}`;
 
   await tgAPI('sendMessage', env.TG_TOKEN, { chat_id: chatId, text: responseText });
 }
@@ -91,7 +95,7 @@ async function handleCommand(text, chatId, env) {
 
   await tgAPI('sendMessage', env.TG_TOKEN, { 
     chat_id: chatId, 
-    text: `Total spent (${cmd}): ${res.total || 0}` 
+    text: `Total spent (${cmd}): ${formatVND(res.total || 0)}` 
   });
 }
 
@@ -118,10 +122,10 @@ async function handleCallback(cb, env) {
   } else if (data.startsWith("total_year_")) {
     const year = data.split("_")[2];
     const res = await env.DB.prepare(`SELECT SUM(amount) as t FROM transactions WHERE chat_id = ? AND type = 'expense' AND strftime('%Y', transaction_date) = ?`).bind(chatId, year).first();
-    await tgAPI('answerCallbackQuery', env.TG_TOKEN, { callback_query_id: cb.id, text: `Spent in ${year}: ${res.t || 0}`, show_alert: true });
+    await tgAPI('answerCallbackQuery', env.TG_TOKEN, { callback_query_id: cb.id, text: `Spent in ${year}: ${formatVND(res.t || 0)}`, show_alert: true });
   } else if (data === "total_all") {
     const res = await env.DB.prepare(`SELECT SUM(amount) as t FROM transactions WHERE chat_id = ? AND type = 'expense'`).bind(chatId).first();
-    await tgAPI('answerCallbackQuery', env.TG_TOKEN, { callback_query_id: cb.id, text: `All-Time Spent: ${res.t || 0}`, show_alert: true });
+    await tgAPI('answerCallbackQuery', env.TG_TOKEN, { callback_query_id: cb.id, text: `All-Time Spent: ${formatVND(res.t || 0)}`, show_alert: true });
   }
 }
 
@@ -147,7 +151,12 @@ async function sendDashboardHome(chatId, env, msgId = null) {
 }
 
 async function extractDataLLM(text, imageUrl, env) {
-  const prompt = `Extract transaction data into strict JSON: {"amount": float, "type": "income" or "expense", "category": "string"}. Use '+' prefix in text or obvious incoming funds in image for income. Fallback category: "misc".`;
+  const prompt = `Extract transaction data into strict JSON: {"amount": integer, "type": "income" or "expense", "category": "string"}. 
+  CRITICAL RULES FOR VND: 
+  - Convert shorthand to full integers: "50k" = 50000, "1tr" or "1m" = 1000000. 
+  - Remove all dots/commas from the final amount number.
+  - Use '+' prefix in text or obvious incoming funds in image for "income". 
+  - Fallback category: "misc".`;
   
   const contents = [{ parts: [{ text: prompt }] }];
   
