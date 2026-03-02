@@ -1,0 +1,8 @@
+{
+  "name": "myfin-bot",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

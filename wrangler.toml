@@ -1,0 +1,8 @@
+name = "myfin-bot"
+main = "src/index.js"
+compatibility_date = "2024-03-02"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "myfin_bot_db"
+database_id = "73aefa26-c834-4eed-828d-7daf88e722d7"

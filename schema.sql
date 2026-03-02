@@ -1,0 +1,9 @@
+CREATE TABLE transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER UNIQUE NOT NULL,
+    chat_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    amount REAL NOT NULL,
+    category TEXT NOT NULL,
+    transaction_date DATETIME DEFAULT CURRENT_TIMESTAMP
+);
