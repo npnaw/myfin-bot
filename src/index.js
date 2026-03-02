@@ -14,6 +14,12 @@ export default {
       if (!msg || !msg.chat) return new Response("OK");
 
       const chatId = msg.chat.id;
+      if (chatId.toString() !== env.MY_CHAT_ID) {
+        console.log(`Unauthorized access attempt from ${chatId}`);
+        return new Response("OK");
+      }
+
+
       const text = msg.text || msg.caption || "";
 
       if (text.startsWith("/")) {
