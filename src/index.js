@@ -141,7 +141,7 @@ async function handleCommand(text, chatId, env) {
 
   await tgAPI('sendMessage', env.TG_TOKEN, { 
     chat_id: chatId, 
-    text: `Total spent (${dateLabel}): ${formatVND(res.total || 0)}` 
+    text: `Tổng chi (${dateLabel}): ${formatVND(res.total || 0)}` 
   });
 }
 
@@ -306,7 +306,7 @@ async function extractDataLLM(text, imageUrl, env) {
   - Default "type" to "expense" for EVERYTHING. Use "income" ONLY if the text explicitly contains a "+" prefix.
   - Convert shorthand to full integers: "50k" = 50000, "1tr" or "1m" = 1000000.
   - Remove all dots/commas from the final amount number.
-  - Fallback category is "misc" for image uploads with no caption/text.`;
+  - Fallback category is "misc" for image uploads with no caption/text only.`;
   
   const contents = [{ parts: [{ text: prompt }] }];
   
