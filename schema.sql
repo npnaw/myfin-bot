@@ -5,5 +5,6 @@ CREATE TABLE transactions (
     type TEXT NOT NULL,
     amount REAL NOT NULL,
     category TEXT NOT NULL,
-    transaction_date DATETIME DEFAULT CURRENT_TIMESTAMP
+    transaction_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    bot_message_id INTEGER
 );

@@ -14,6 +14,7 @@ export default {
         return new Response("OK");
       }
 
+      const isEdit = !!update.edited_message;
       const msg = update.message || update.edited_message;
       if (!msg || !msg.chat) return new Response("OK");
 
@@ -31,7 +32,7 @@ export default {
         return new Response("OK");
       }
 
-      await processTransaction(msg, chatId, text, env);
+      await processTransaction(msg, chatId, text, env, isEdit);
       return new Response("OK");
 
     } catch (err) {
@@ -41,20 +42,11 @@ export default {
   }
 };
 
-async function processTransaction(msg, chatId, text, env) {
-  let imageUrl = null;
+async function processTransaction(msg, chatId, text, env, isEdit = false) {
+  if (!text) return;
 
-  if (msg.photo && msg.photo.length > 0) {
-    const fileId = msg.photo[msg.photo.length - 1].file_id;
-    const fileRes = await fetch(`https://api.telegram.org/bot${env.TG_TOKEN}/getFile?file_id=${fileId}`);
-    const fileData = await fileRes.json();
-    imageUrl = `https://api.telegram.org/file/bot${env.TG_TOKEN}/${fileData.result.file_path}`;
-  }
-
-  if (!text && !imageUrl) return;
-
-  const data = await extractDataLLM(text, imageUrl, env);
-  if (!data || !data.amount) return;
+  const data = parseTransaction(text);
+  if (!data) return;
 
   await env.DB.prepare(`
     INSERT INTO transactions (message_id, chat_id, type, amount, category, transaction_date)
@@ -72,7 +64,30 @@ async function processTransaction(msg, chatId, text, env) {
   const actionText = data.type === 'income' ? 'Đã nhận' : 'Đã chi';
   const responseText = `${actionText} ${formatVND(data.amount)} cho ${data.category}\nCòn lại ${formatVND(balance)}`;
 
-  await tgAPI('sendMessage', env.TG_TOKEN, { chat_id: chatId, text: responseText });
+  if (isEdit) {
+    const existing = await env.DB.prepare(
+      `SELECT bot_message_id FROM transactions WHERE message_id = ? AND chat_id = ?`
+    ).bind(msg.message_id, chatId).first();
+
+    if (existing?.bot_message_id) {
+      await tgAPI('editMessageText', env.TG_TOKEN, {
+        chat_id: chatId,
+        message_id: existing.bot_message_id,
+        text: responseText,
+      });
+      return;
+    }
+  }
+
+  const sentRes = await tgAPI('sendMessage', env.TG_TOKEN, { chat_id: chatId, text: responseText });
+  const sentJson = await sentRes.json();
+  const botMsgId = sentJson?.result?.message_id;
+
+  if (botMsgId) {
+    await env.DB.prepare(
+      `UPDATE transactions SET bot_message_id = ? WHERE message_id = ? AND chat_id = ?`
+    ).bind(botMsgId, msg.message_id, chatId).run();
+  }
 }
 
 async function handleCommand(text, chatId, env) {
@@ -173,7 +188,10 @@ async function handleCallback(cb, env) {
       }
     });
 
-    keyboard.push([{text: `📊 Total ${year}`, callback_data: `total_year_${year}`}]);
+    keyboard.push([
+      {text: `📊 Total ${year}`, callback_data: `total_year_${year}`},
+      {text: `🗂 Categories ${year}`, callback_data: `cat_year_${year}`},
+    ]);
     keyboard.push([{text: "⬅️ Back", callback_data: "view_home"}]);
 
     const text = results.length > 0 ? `Năm ${year}:` : `Chưa có giao dịch nào trong năm ${year}.`;
@@ -207,7 +225,10 @@ async function handleCallback(cb, env) {
       }
     });
 
-    keyboard.push([{text: `📊 Total ${month}/${year}`, callback_data: `total_month_${year}_${month}`}]);
+    keyboard.push([
+      {text: `📊 Total ${month}/${year}`, callback_data: `total_month_${year}_${month}`},
+      {text: `🗂 Categories ${month}/${year}`, callback_data: `cat_month_${year}_${month}`},
+    ]);
     keyboard.push([{text: "⬅️ Back", callback_data: `view_year_${year}`}]);
 
     const text = results.length > 0 ? `Tháng ${month}/${year}:` : `Không có giao dịch.`;
@@ -232,8 +253,19 @@ async function handleCallback(cb, env) {
 
     await tgAPI('answerCallbackQuery', env.TG_TOKEN, { 
       callback_query_id: cb.id, 
-      text: `Đã chi ngày ${day}/${month}/${year}: ${formatVND(res.t || 0)}`, 
+      text: `Đã chi ngày ${day}/${month}/${year}: ${formatVND(res.t || 0)}\nDùng 🗂 Categories để xem theo danh mục`, 
       show_alert: true 
+    });
+
+    await tgAPI('editMessageReplyMarkup', env.TG_TOKEN, {
+      chat_id: chatId,
+      message_id: msgId,
+      reply_markup: JSON.stringify({
+        inline_keyboard: [
+          [{ text: `🗂 Categories ${day}/${month}/${year}`, callback_data: `cat_day_${year}_${month}_${day}` }],
+          [{ text: "⬅️ Back", callback_data: `view_month_${year}_${month}` }],
+        ]
+      })
     });
   } else if (data.startsWith("total_month_")) {
     const parts = data.split("_");
@@ -276,6 +308,56 @@ async function handleCallback(cb, env) {
       text: `Tổng tất cả: ${formatVND(res.t || 0)}`, 
       show_alert: true 
     });
+  } else if (data.startsWith("cat_year_")) {
+    const year = data.split("_")[2];
+    const { results } = await env.DB.prepare(`
+      SELECT category, SUM(amount) as total
+      FROM transactions
+      WHERE chat_id = ? AND type = 'expense' AND strftime('%Y', transaction_date) = ?
+      GROUP BY category ORDER BY total DESC
+    `).bind(chatId, year).all();
+
+    const lines = results.map(r => `${r.category}: ${formatVND(r.total)}`).join('\n');
+    await tgAPI('answerCallbackQuery', env.TG_TOKEN, {
+      callback_query_id: cb.id,
+      text: results.length > 0 ? `Danh mục ${year}:\n${lines}` : `Không có dữ liệu.`,
+      show_alert: true,
+    });
+  } else if (data.startsWith("cat_month_")) {
+    const parts = data.split("_");
+    const year = parts[2];
+    const month = parts[3];
+    const { results } = await env.DB.prepare(`
+      SELECT category, SUM(amount) as total
+      FROM transactions
+      WHERE chat_id = ? AND type = 'expense' AND strftime('%Y-%m', transaction_date) = ?
+      GROUP BY category ORDER BY total DESC
+    `).bind(chatId, `${year}-${month}`).all();
+
+    const lines = results.map(r => `${r.category}: ${formatVND(r.total)}`).join('\n');
+    await tgAPI('answerCallbackQuery', env.TG_TOKEN, {
+      callback_query_id: cb.id,
+      text: results.length > 0 ? `Danh mục ${month}/${year}:\n${lines}` : `Không có dữ liệu.`,
+      show_alert: true,
+    });
+  } else if (data.startsWith("cat_day_")) {
+    const parts = data.split("_");
+    const year = parts[2];
+    const month = parts[3];
+    const day = parts[4];
+    const { results } = await env.DB.prepare(`
+      SELECT category, SUM(amount) as total
+      FROM transactions
+      WHERE chat_id = ? AND type = 'expense' AND date(transaction_date) = ?
+      GROUP BY category ORDER BY total DESC
+    `).bind(chatId, `${year}-${month}-${day}`).all();
+
+    const lines = results.map(r => `${r.category}: ${formatVND(r.total)}`).join('\n');
+    await tgAPI('answerCallbackQuery', env.TG_TOKEN, {
+      callback_query_id: cb.id,
+      text: results.length > 0 ? `Danh mục ${day}/${month}/${year}:\n${lines}` : `Không có dữ liệu.`,
+      show_alert: true,
+    });
   }
 }
 
@@ -300,39 +382,33 @@ async function sendDashboardHome(chatId, env, msgId = null) {
   }
 }
 
-async function extractDataLLM(text, imageUrl, env) {
-  const prompt = `Extract transaction data into strict JSON: {"amount": integer, "type": "income" or "expense", "category": "string"}.
-  CRITICAL RULES:
-  - Default "type" to "expense" for EVERYTHING. Use "income" ONLY if the text explicitly contains a "+" prefix.
-  - Convert shorthand to full integers: "50k" = 50000, "1tr" or "1m" = 1000000.
-  - Remove all dots/commas from the final amount number.
-  - Fallback category is "misc" for image uploads with no caption/text only.`;
-  
-  const contents = [{ parts: [{ text: prompt }] }];
-  
-  if (imageUrl) {
-    const imgRes = await fetch(imageUrl);
-    const arrayBuffer = await imgRes.arrayBuffer();
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-    contents[0].parts.push({
-      inline_data: { mime_type: "image/jpeg", data: base64 }
-    });
-  }
-  
-  if (text) contents[0].parts.push({ text: `User Input: ${text}` });
+function parseTransaction(text) {
+  const raw = text.trim();
+  const match = raw.match(/^(\+?)(\d[\d.,]*)([kKmM]|[tT][rR]\d*)?(.*)$/);
+  if (!match) return null;
 
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_KEY}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents, generationConfig: { response_mime_type: "application/json" } })
-  });
+  const isIncome = match[1] === '+';
+  let digits = match[2].replace(/[.,]/g, '');
+  const suffix = (match[3] || '').toLowerCase();
+  const rest = (match[4] || '').trim();
 
-  const json = await res.json();
-  try {
-    return JSON.parse(json.candidates[0].content.parts[0].text);
-  } catch {
-    return null;
+  let amount = parseInt(digits, 10);
+  if (suffix === 'k') {
+    amount *= 1000;
+  } else if (suffix === 'm') {
+    amount *= 1000000;
+  } else if (suffix.startsWith('tr')) {
+    const extra = suffix.slice(2);
+    amount = amount * 1000000 + (extra ? parseInt(extra, 10) * 100000 : 0);
   }
+
+  if (!amount || !rest) return null;
+
+  return {
+    type: isIncome ? 'income' : 'expense',
+    amount,
+    category: rest,
+  };
 }
 
 async function tgAPI(method, token, body) {
