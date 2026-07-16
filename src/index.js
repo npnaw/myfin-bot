@@ -79,7 +79,11 @@ async function processTransaction(msg, chatId, text, env, isEdit = false) {
     }
   }
 
-  const sentRes = await tgAPI('sendMessage', env.TG_TOKEN, { chat_id: chatId, text: responseText });
+  const sentRes = await tgAPI('sendMessage', env.TG_TOKEN, {
+    chat_id: chatId,
+    text: responseText,
+    reply_to_message_id: msg.message_id,
+  });
   const sentJson = await sentRes.json();
   const botMsgId = sentJson?.result?.message_id;
 
@@ -402,7 +406,7 @@ function parseTransaction(text) {
     amount = amount * 1000000 + (extra ? parseInt(extra, 10) * 100000 : 0);
   }
 
-  if (!amount || !rest) return null;
+  if (!amount) return null;
 
   return {
     type: isIncome ? 'income' : 'expense',
